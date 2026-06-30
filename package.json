@@ -1,10 +1,18 @@
 {
   "name": "@zappar/zapbox-controller-web",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "description": "TypeScript library for Zapbox BLE controllers via Web Bluetooth",
   "type": "module",
   "license": "MIT",
   "author": "Zappar Limited",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zappar-xr/zapbox-controller-web.git"
+  },
+  "homepage": "https://github.com/zappar-xr/zapbox-controller-web#readme",
+  "bugs": {
+    "url": "https://github.com/zappar-xr/zapbox-controller-web/issues"
+  },
   "keywords": [
     "zapbox",
     "webxr",
