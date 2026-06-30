@@ -1,6 +1,6 @@
 {
   "name": "@zappar/zapbox-controller-web",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "description": "TypeScript library for Zapbox BLE controllers via Web Bluetooth",
   "type": "module",
   "license": "MIT",
