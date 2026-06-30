@@ -1,0 +1,60 @@
+{
+  "name": "@zappar/zapbox-controller-web",
+  "version": "0.9.1",
+  "description": "TypeScript library for Zapbox BLE controllers via Web Bluetooth",
+  "type": "module",
+  "license": "MIT",
+  "author": "Zappar Limited",
+  "keywords": [
+    "zapbox",
+    "webxr",
+    "web-bluetooth",
+    "ble",
+    "controller",
+    "vr",
+    "imu",
+    "gamepad"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "sideEffects": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "demo": "vite --host",
+    "typecheck": "tsc --noEmit",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@types/three": "0.184.1",
+    "@types/web-bluetooth": "0.0.21",
+    "@types/webxr": "0.5.24",
+    "@vitejs/plugin-basic-ssl": "2.3.0",
+    "three": "0.184.0",
+    "tsup": "8.5.1",
+    "typescript": "5.9.3",
+    "vite": "8.1.0"
+  },
+  "dependencies": {
+    "gl-matrix": "3.4.4"
+  }
+}

@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Zapbox Controller Manager Demo</title>
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body { font-family: system-ui, sans-serif; background: #111; color: #eee; }
+
+      #top-bar {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        padding: 0.75rem 1.5rem;
+        border-bottom: 1px solid #222;
+      }
+      #top-bar h1 { font-size: 1rem; font-weight: 600; flex: 1; }
+      #top-bar a { color: #7af; font-size: 0.875rem; text-decoration: none; }
+      #top-bar a:hover { text-decoration: underline; }
+
+      #setup-bar {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0.5rem 0.75rem;
+        padding: 0.75rem 1.5rem;
+        border-bottom: 1px solid #222;
+        background: #161616;
+      }
+      #setup-bar label { font-size: 0.875rem; color: #aaa; }
+      #setup-bar select, #setup-bar button {
+        font-family: inherit;
+        font-size: 0.875rem;
+        padding: 0.4rem 0.75rem;
+        border-radius: 5px;
+        border: 1px solid #444;
+        background: #222;
+        color: #eee;
+        cursor: pointer;
+      }
+      #setup-bar button {
+        background: #2563eb;
+        border-color: #2563eb;
+        color: #fff;
+      }
+      #setup-bar button:disabled { opacity: 0.5; cursor: default; }
+      #status { font-size: 0.875rem; color: #888; margin-left: auto; }
+
+      #scene-container { width: 100%; }
+      #scene-container canvas { display: block; width: 100% !important; height: auto !important; }
+    </style>
+  </head>
+  <body>
+    <div id="top-bar">
+      <h1>Zapbox Controller Manager</h1>
+      <a href="./index.html">← Low-level demo</a>
+    </div>
+    <div id="setup-bar">
+      <label for="min-select">Min:</label>
+      <select id="min-select">
+        <option value="0">0</option>
+        <option value="1">1</option>
+        <option value="2">2</option>
+      </select>
+      <label for="max-select">Max:</label>
+      <select id="max-select">
+        <option value="0">0</option>
+        <option value="1">1</option>
+        <option value="2" selected>2</option>
+      </select>
+      <label for="rec-select">Recommended:</label>
+      <select id="rec-select">
+        <option value="" selected>(none)</option>
+        <option value="0">0</option>
+        <option value="1">1</option>
+        <option value="2">2</option>
+      </select>
+      <button id="setup-btn">Set up controllers</button>
+      <button id="disconnect-btn" disabled>Disconnect</button>
+      <button id="reconnect-btn" disabled>Reconnect</button>
+      <span id="status"></span>
+    </div>
+    <div id="scene-container"></div>
+    <script type="module" src="./manager.ts"></script>
+  </body>
+</html>

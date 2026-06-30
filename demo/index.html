@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Zapbox Controller Demo</title>
+    <style>
+      body { font-family: monospace; padding: 2rem; background: #111; color: #eee; }
+      h1 { margin-top: 0; }
+      button { font-family: monospace; font-size: 1rem; padding: 0.5rem 1.5rem; cursor: pointer; }
+      #status { margin: 1rem 0; color: #aaa; }
+      h2 { color: #7af; margin-bottom: 0.5rem; }
+      pre { background: #222; padding: 1rem; border-radius: 4px; margin: 0; }
+
+      #scene-container { margin-top: 1.5rem; }
+      #scene-container canvas { display: block; border-radius: 6px; max-width: 100%; }
+
+      #controls { margin-top: 1.5rem; display: none; }
+      .buttons { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; }
+      .btn-indicator {
+        padding: 0.5rem 1rem;
+        border-radius: 6px;
+        background: #333;
+        color: #888;
+                user-select: none;
+      }
+      .btn-indicator.pressed { background: #2a7a2a; color: #fff; }
+
+      .thumbstick {
+        position: relative;
+        width: 100px;
+        height: 100px;
+        border-radius: 50%;
+        background: #333;
+        flex-shrink: 0;
+      }
+      .thumbstick-dot {
+        position: absolute;
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        background: #7af;
+        transform: translate(-50%, -50%);
+        left: 50%;
+        top: 50%;
+      }
+      .thumbstick-dot.pressed { background: #2a7a2a; }
+
+      .trigger-meter {
+        position: relative;
+        width: 40px;
+        height: 100px;
+        border-radius: 6px;
+        background: #333;
+        flex-shrink: 0;
+      }
+      .trigger-fill {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background: #7af;
+        border-radius: 6px;
+        height: 0%;
+      }
+      .trigger-fill.pressed { background: #2a7a2a; }
+
+      #debug { margin-top: 1.5rem; display: none; }
+      #debug > div { margin-top: 1rem; }
+    </style>
+  </head>
+  <body>
+    <h1>Zapbox Controller Demo — <a href="./manager.html" style="font-size:0.85rem;color:#7af;">Controller Manager →</a></h1>
+    <button id="connect">Connect</button>
+    <button id="disconnect" disabled>Disconnect</button>
+    <button id="reconnect" hidden>Reconnect</button>
+    <button id="reset-forward" hidden>Reset Forward</button>
+    <div id="status">Not connected</div>
+
+    <div id="scene-container"></div>
+    <div id="calibration" hidden style="margin-top:0.75rem; color:#aaa;"></div>
+    <canvas id="metrics-plot" width="600" height="150" hidden style="margin-top:0.5rem; border-radius:4px; max-width:100%; display:block;"></canvas>
+
+    <div id="controls">
+      <h2>Input State</h2>
+      <div class="buttons">
+        <div class="thumbstick">
+          <div class="thumbstick-dot" id="thumbstick-dot"></div>
+        </div>
+        <div class="trigger-meter">
+          <div class="trigger-fill" id="trigger-fill"></div>
+        </div>
+        <div class="btn-indicator" id="btn-a">A</div>
+        <div class="btn-indicator" id="btn-b">B</div>
+        <div class="btn-indicator" id="btn-menu">Menu</div>
+        <div class="btn-indicator" id="btn-grip">Grip</div>
+      </div>
+    </div>
+
+    <div id="debug">
+      <div>
+        <h2>Device Info</h2>
+        <pre id="info-data"></pre>
+      </div>
+      <div>
+        <h2>Input State</h2>
+        <pre id="input-data"></pre>
+      </div>
+      <div>
+        <h2>Latest IMU Sample</h2>
+        <pre id="imu-data"></pre>
+      </div>
+    </div>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
