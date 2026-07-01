@@ -62,8 +62,13 @@ export class ZapboxInputSource {
   private readonly axes = [0, 0, 0, 0];
   private readonly gamepad: Gamepad;
 
-  private prevTrigger = false;
-  private prevGrip = false;
+  // Per-button edge state. `armed` starts false so a button still held when this source is created —
+  // notably the trigger squeeze that dismissed the calibration pre-roll — is swallowed: no select /
+  // squeeze events fire until the button has been released once. Otherwise that held press surfaces to
+  // the page as a stray selectstart→select→selectend on release, which a teleport app acts on, jumping
+  // the user on entry.
+  private readonly triggerState = { prev: false, armed: false };
+  private readonly gripState = { prev: false, armed: false };
   private pendingEvents: string[] = [];
   private readonly boundUpdate: (ev: CustomEvent<ControllerUpdate>) => void;
 
@@ -120,16 +125,25 @@ export class ZapboxInputSource {
     this.axes[2] = state.thumbstickX;
     this.axes[3] = -state.thumbstickY;
 
-    if (b.trigger !== this.prevTrigger) {
-      this.pendingEvents.push(b.trigger ? 'selectstart' : 'select');
-      if (!b.trigger) this.pendingEvents.push('selectend');
-      this.prevTrigger = b.trigger;
+    this.emitEdge(b.trigger, this.triggerState, 'selectstart', 'select', 'selectend');
+    this.emitEdge(b.grip, this.gripState, 'squeezestart', 'squeeze', 'squeezeend');
+  }
+
+  /**
+   * Queue the WebXR events for a button edge: `start` on press, then `action` + `end` on release. While
+   * disarmed (until the button is first seen released) nothing is emitted — this swallows a button held
+   * at construction (e.g. the pre-roll's trigger squeeze) so its release isn't leaked to the page.
+   */
+  private emitEdge(pressed: boolean, state: { prev: boolean; armed: boolean }, start: string, action: string, end: string): void {
+    if (!state.armed) {
+      if (!pressed) state.armed = true; // arm once released; a still-held button stays swallowed
+      state.prev = pressed;
+      return;
     }
-    if (b.grip !== this.prevGrip) {
-      this.pendingEvents.push(b.grip ? 'squeezestart' : 'squeeze');
-      if (!b.grip) this.pendingEvents.push('squeezeend');
-      this.prevGrip = b.grip;
-    }
+    if (pressed === state.prev) return;
+    state.prev = pressed;
+    if (pressed) this.pendingEvents.push(start);
+    else this.pendingEvents.push(action, end);
   }
 
   /**
