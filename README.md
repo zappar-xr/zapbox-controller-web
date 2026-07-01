@@ -33,7 +33,7 @@ page, and when you enter VR you'll be guided through pairing your controllers.
 
 ```js
 javascript:(function(){var s=document.createElement('script');
-s.src='https://cdn.jsdelivr.net/npm/@zappar/zapbox-controller-web@0.9.4/dist/zapbox.global.js';
+s.src='https://cdn.jsdelivr.net/npm/@zappar/zapbox-controller-web@0.9.5/dist/zapbox.global.js';
 s.onload=function(){window.__zapboxWebXRInstalled||(window.__zapboxWebXRInstalled=Zapbox.installZapboxWebXR())};
 document.head.appendChild(s)})();
 ```
@@ -148,7 +148,7 @@ with the same API surface as the module entry point (bundles the library + `gl-m
 what the [bookmarklet](#add-controllers-to-an-existing-webxr-page-bookmarklet) loads:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/@zappar/zapbox-controller-web@0.9.4/dist/zapbox.global.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@zappar/zapbox-controller-web@0.9.5/dist/zapbox.global.js"></script>
 <script>
   // window.Zapbox.{ ZapboxController, ZapboxControllerManager, installZapboxWebXR, ... }
   Zapbox.installZapboxWebXR();

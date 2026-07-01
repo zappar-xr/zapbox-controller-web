@@ -3,7 +3,7 @@ import type { ControllerUpdate } from '../types.js';
 import { CONTROLLER_OFFSETS } from './constants.js';
 import { ZapboxInputSource } from './ZapboxInputSource.js';
 import { LongPressDetector } from './LongPressDetector.js';
-import { controllerTransform, headingFromOrientation, recenterOffsetFromGaze } from './pose.js';
+import { composeRigid, controllerTransform, headingFromOrientation, recenterOffsetFromGaze } from './pose.js';
 
 export interface ControllerBinding {
   controller: ZapboxController;
@@ -15,11 +15,6 @@ export interface ZapboxSessionAdapterOptions {
    *  Default false — report only the controllers, so apps assuming a single input paradigm aren't
    *  confused by a simultaneous gaze source. */
   includeNativeInputSources?: boolean;
-}
-
-interface SpaceRecord {
-  type: XRReferenceSpaceType;
-  effective: XRReferenceSpace;
 }
 
 interface InputSourcesChangeEvent extends Event {
@@ -39,18 +34,50 @@ const RECENTERABLE: XRReferenceSpaceType[] = ['local', 'local-floor', 'bounded-f
  * the inputSources getter) rather than returning a Proxy — a Proxy isn't a real platform object, so
  * `new XRWebGLLayer(session, gl)` would reject it when it unwraps the argument to the native session.
  *
- * The recenter is expressed two ways for the same yaw:
- *  - the viewer (and any real spaces) is recentered via an offset reference space substituted into
- *    native getViewerPose/getPose calls, so the page lives entirely in "effective" coordinates;
- *  - synthetic controllers are placed directly in that effective frame (orientation straight from
- *    the controller, which carries its own resetForward yaw datum).
+ * The recenter is a yaw-only offset computed by the calibration pre-roll (rebuildable on a full-reset
+ * gesture). We hand the page the RAW reference space and recenter by substituting an "effective"
+ * space into its frame queries — but rather than keying that substitution on the exact object we
+ * returned (which a page defeats the moment it derives its own offset space for locomotion, as the
+ * webxr-samples teleportation demo does), we MEASURE where whatever space the page passes sits
+ * relative to our raw base and rebuild the recenter on top of it:
+ *
+ *     effective(X) = internalRecentered.getOffsetReferenceSpace( pose(X relative to internalRaw) )
+ *
+ * That keeps the recenter innermost (at the base origin) with the page's own locomotion layered on
+ * top, works for any space the page derives, stays dynamic (rebuild `internalRecentered` → next frame
+ * picks it up), and lets the platform compute the eyes/projection (we substitute a real reference
+ * space, not hand-rolled matrices). We patch getOffsetReferenceSpace on each recenterable base to tag
+ * its descendants (see trackDescendants), so we only substitute for spaces that genuinely descend from
+ * one of our roots — spaces rooted elsewhere (viewer, an anchor) pass through untouched. That makes
+ * the relative pose a same-root static rigid offset (a base `reset` shifts both together, leaving it
+ * invariant), so it's safe to cache per space until the recenter itself changes.
+ *
+ * Synthetic controllers are built in `internalRecentered` (gravity-aligned, where the neck/shoulder
+ * offset maths holds) and composed into whatever space the page renders through by the frame delta
+ * between them (see getPose / controllerPoseInRecenter), so they ride along with the page's world —
+ * turn, teleport, even tilt — while staying correctly placed relative to the viewer.
  */
 export class ZapboxSessionAdapter {
   private readonly inputSources: ZapboxInputSource[] = [];
   private readonly cleanups: Array<() => void> = [];
-  private readonly spaceInfo = new Map<XRReferenceSpace, SpaceRecord>();
-  private primaryBase: XRReferenceSpace | null = null;
+  // Recenter reference frames. `roots` holds every recenterable base we hand the page (local /
+  // local-floor / bounded-floor — they share orientation, so one recenter yaw serves all). `internalRaw`
+  // is the first of them, the canonical frame for gaze reads; `internalRecentered` is it with the
+  // recenter applied — the frame our controller orientations live in (orientation is translation-
+  // invariant, so it's a valid heading reference for content descending from any root). Rebuilt when
+  // the recenter changes; `recenterVersion` invalidates the per-space effective cache on that change.
+  private readonly roots = new Set<XRReferenceSpace>();
+  private internalRaw: XRReferenceSpace | null = null;
+  private internalRecentered: XRReferenceSpace | null = null;
   private offsetTransform: XRRigidTransform | null = null;
+  private recenterVersion = 0;
+  // Effective (recentered) space per page-supplied space, valid while its `.version` matches
+  // recenterVersion. WeakMap so spaces the page creates per-teleport are collected when it drops them.
+  private readonly effectiveCache = new WeakMap<XRReferenceSpace, { version: number; space: XRReferenceSpace }>();
+  // Every space the page derives (at any depth) from a root via getOffsetReferenceSpace, mapped to that
+  // root. Lets us recenter iff a space genuinely descends from one of our recenter bases — spaces
+  // rooted elsewhere (viewer, foreign) have no entry and pass through, closing the cross-root edge.
+  private readonly rootOf = new WeakMap<XRReferenceSpace, XRReferenceSpace>();
   // Controllers awaiting a forward-to-gaze reset (a Set so overlapping per-controller gestures don't
   // clobber each other), and whether a full recenter is queued.
   private readonly pendingControllerResets = new Set<ZapboxController>();
@@ -98,13 +125,16 @@ export class ZapboxSessionAdapter {
 
   /** Set the recenter computed during the calibration pre-roll, before the page gets the session. */
   setInitialOffset(offsetTransform: XRRigidTransform): void {
-    this.offsetTransform = offsetTransform;
-    this.rebuildEffectives();
+    this.setRecenter(offsetTransform);
   }
 
   dispose(): void {
     for (const s of this.inputSources) s.dispose();
     for (const cleanup of this.cleanups) cleanup();
+    // Un-shadow getOffsetReferenceSpace on our roots (session-scoped spaces, but restore for hygiene;
+    // derived children are transient and collected with the page's references).
+    for (const root of this.roots) delete (root as { getOffsetReferenceSpace?: unknown }).getOffsetReferenceSpace;
+    this.roots.clear();
     // Restore the genuine members in case the session object outlives us.
     const patched = this.session as unknown as Record<string, unknown>;
     delete patched.requestAnimationFrame;
@@ -123,7 +153,13 @@ export class ZapboxSessionAdapter {
       get: () => this.allInputSources(),
     });
     session.requestAnimationFrame = (cb: XRFrameRequestCallback) =>
-      this.origRequestAnimationFrame((t, frame) => cb(t, this.wrapFrame(frame)));
+      this.origRequestAnimationFrame((t, frame) => {
+        // Apply any queued recenter (and dispatch its 'reset') BEFORE the page's frame callback runs,
+        // so the event fires prior to the frame that uses the new origin (per the XRReferenceSpace
+        // contract) and the callback's getViewerPose/getPose already see the new recenter.
+        this.applyPendingReset(frame);
+        cb(t, this.wrapFrame(frame));
+      });
     session.requestReferenceSpace = (type: XRReferenceSpaceType) => this.requestReferenceSpace(type);
 
     // Intercept inputsourceschange: consumer listeners are collected here rather than attached to the
@@ -215,26 +251,93 @@ export class ZapboxSessionAdapter {
 
   private async requestReferenceSpace(type: XRReferenceSpaceType): Promise<XRReferenceSpace> {
     const base = await this.origRequestReferenceSpace(type);
-    this.spaceInfo.set(base, { type, effective: this.computeEffective(base, type) });
-    if (this.primaryBase === null && this.isRecenterable(type)) this.primaryBase = base;
-    return base; // page holds the real space; we substitute the effective one in frame queries
-  }
-
-  private computeEffective(base: XRReferenceSpace, type: XRReferenceSpaceType): XRReferenceSpace {
-    if (this.offsetTransform && this.isRecenterable(type)) {
-      return base.getOffsetReferenceSpace(this.offsetTransform);
+    // Hand the page the RAW space; we recenter by substituting an effective space in frame queries
+    // (effectiveFor). Each recenterable base is a root — patch its getOffsetReferenceSpace so we can
+    // recognise the descendants the page derives from it for locomotion.
+    if (this.isRecenterable(type) && !this.roots.has(base)) {
+      this.roots.add(base);
+      this.trackDescendants(base, base);
+      if (this.internalRaw === null) {
+        this.internalRaw = base;
+        this.rebuildInternalRecentered();
+      }
     }
     return base;
   }
 
-  private rebuildEffectives(): void {
-    for (const [base, rec] of this.spaceInfo) {
-      rec.effective = this.computeEffective(base, rec.type);
+  /** Patch getOffsetReferenceSpace on `space` so children are tagged with their recenter `root` and are
+   *  themselves patched — propagating the root down arbitrarily long offset chains. */
+  private trackDescendants(space: XRReferenceSpace, root: XRReferenceSpace): void {
+    const origGetOffset = space.getOffsetReferenceSpace.bind(space);
+    (space as { getOffsetReferenceSpace: XRReferenceSpace['getOffsetReferenceSpace'] }).getOffsetReferenceSpace =
+      (transform: XRRigidTransform) => {
+        const child = origGetOffset(transform);
+        this.rootOf.set(child, root);
+        this.trackDescendants(child, root);
+        return child;
+      };
+  }
+
+  private setRecenter(offsetTransform: XRRigidTransform): void {
+    this.offsetTransform = offsetTransform;
+    this.recenterVersion++; // invalidate the effective cache; next frame rebuilds against the new offset
+    this.rebuildInternalRecentered();
+  }
+
+  /**
+   * Fire 'reset' on each root so the page re-anchors after a recenter (its effective origin moved),
+   * per the XRReferenceSpace contract. dispatchEvent fires the root's current listeners —
+   * addEventListener and onreset alike, honouring any removals — so no listener bookkeeping is needed.
+   * (Only listeners on the roots we return are reached, not ones the page attaches to an ephemeral
+   * offset space it derived — apps listen on the stable base.) Called from applyPendingReset, i.e.
+   * before the page's frame callback (see requestAnimationFrame), so it precedes the frame that uses
+   * the new origin; a no-op before the page holds any spaces (the initial pre-roll offset).
+   *
+   * `transform` is the origin shift (recenter delta), so a listening page can absorb it into its own
+   * offset (fold the yaw into a locomotion offset to keep its view put — see demo/webxr-locomotion);
+   * only meaningful on the root, which is all we dispatch on.
+   */
+  private dispatchReset(transform?: XRRigidTransform): void {
+    for (const root of this.roots) {
+      root.dispatchEvent(new XRReferenceSpaceEvent('reset', { referenceSpace: root, transform }));
     }
   }
 
-  private effectiveFor(base: XRSpace): XRSpace {
-    return this.spaceInfo.get(base as XRReferenceSpace)?.effective ?? base;
+  private rebuildInternalRecentered(): void {
+    this.internalRecentered = this.internalRaw && this.offsetTransform
+      ? this.internalRaw.getOffsetReferenceSpace(this.offsetTransform)
+      : this.internalRaw;
+  }
+
+  /**
+   * The recentered space to substitute for a page-supplied space `x`. We rebuild the recenter on top
+   * of where `x` sits relative to our raw base (a static rigid offset — same root), so the recenter
+   * stays at the base origin with the page's locomotion layered above it. Cached per space until the
+   * recenter changes. Falls back to `x` untouched when there's no recenter yet, `x` is a passthrough
+   * (viewer) space, or the relative pose is momentarily unavailable (tracking loss).
+   */
+  private effectiveFor(frame: XRFrame, x: XRReferenceSpace): XRReferenceSpace {
+    if (!this.internalRecentered || !this.offsetTransform) return x;
+    // Recenter only spaces that descend from one of our recenter roots; anything else (viewer,
+    // foreign) is rendered as the page intends. The root also gives us a same-root base to measure
+    // against, so the relative pose below is static.
+    const root = this.roots.has(x) ? x : this.rootOf.get(x);
+    if (!root) return x;
+
+    const cached = this.effectiveCache.get(x);
+    if (cached && cached.version === this.recenterVersion) return cached.space;
+
+    let space: XRReferenceSpace;
+    if (x === root) {
+      // A root itself → just the recenter offset. Reuse the prebuilt frame for the primary root.
+      space = root === this.internalRaw ? this.internalRecentered : root.getOffsetReferenceSpace(this.offsetTransform);
+    } else {
+      const rel = frame.getPose(x, root);
+      if (!rel) return x; // don't cache — tracking may resolve on a later frame
+      space = this.effectiveFor(frame, root).getOffsetReferenceSpace(rel.transform);
+    }
+    this.effectiveCache.set(x, { version: this.recenterVersion, space });
+    return space;
   }
 
   // --- frame proxy ---------------------------------------------------------
@@ -243,10 +346,7 @@ export class ZapboxSessionAdapter {
     const wrapped = new Proxy(real, {
       get: (target, prop) => {
         if (prop === 'getViewerPose') {
-          return (refSpace: XRReferenceSpace) => {
-            this.applyPendingReset(target);
-            return target.getViewerPose(this.effectiveFor(refSpace) as XRReferenceSpace);
-          };
+          return (refSpace: XRReferenceSpace) => target.getViewerPose(this.effectiveFor(target, refSpace));
         }
         if (prop === 'getPose') {
           return (space: XRSpace, base: XRSpace) => this.getPose(target, space, base);
@@ -269,26 +369,90 @@ export class ZapboxSessionAdapter {
     );
   }
 
-  private getPose(frame: XRFrame, space: XRSpace, base: XRSpace): XRPose | undefined {
-    const eff = this.effectiveFor(base);
-    const src = this.synthSourceFor(space);
-    if (!src) return frame.getPose(space, eff);
+  // Returns null (not undefined) when no pose is available, matching the platform's XRPose? contract.
+  private getPose(frame: XRFrame, space: XRSpace, base: XRSpace): XRPose | null {
+    // Our rich handling keys off the BASE (recenter, viewer pose). If only the TARGET is a reference
+    // space, swap the query so the reference space lands in the base position, then invert the result.
+    if (space instanceof XRReferenceSpace && !(base instanceof XRReferenceSpace)) {
+      const swapped = this.getPose(frame, base, space);
+      return swapped ? this.synthPose(swapped.transform.inverse, swapped.emulatedPosition) : null;
+    }
+    // A non-reference base (e.g. one controller relative to another) we can't recenter or take a viewer
+    // pose against: express both endpoints in our recenter frame and take the delta (relativeToNonRefBase).
+    if (!(base instanceof XRReferenceSpace)) return this.relativeToNonRefBase(frame, space, base);
 
-    const viewerPose = frame.getViewerPose(eff as XRReferenceSpace);
-    if (!viewerPose) return undefined;
+    const effectiveBase = this.effectiveFor(frame, base);
+    const src = this.synthSourceFor(space);
+    if (!src) {
+      // If the target is also one of our reference spaces, recenter it too, so a query between two of
+      // them — e.g. local-floor relative to local, "what's the floor offset?" — stays consistent and
+      // doesn't pick up a spurious recenter rotation. Non-reference / non-root targets (viewer, a
+      // hit-test anchor) pass through effectiveFor untouched.
+      const effectiveSpace = space instanceof XRReferenceSpace ? this.effectiveFor(frame, space) : space;
+      return frame.getPose(effectiveSpace, effectiveBase) ?? null;
+    }
+
+    // Controllers anchor to our recenter frame (their orientation datum lives there). A page that
+    // requested only non-recenterable spaces (viewer) gives us none — nothing to synthesise against.
+    const recenter = this.internalRecentered;
+    if (!recenter) return null;
+    // Built in the recenter frame (controllerPoseInRecenter), then composed into the frame the page
+    // renders through by the exact frame delta between them — both are reference spaces sharing the
+    // recenter's orientation, so getPose gives it directly, no head-bridge. This is what carries the
+    // controller along with the page's world (turn, teleport, even tilt) while keeping it correctly
+    // placed relative to the viewer. Collapses to `clean` when the page renders straight through.
+    const clean = this.controllerPoseInRecenter(frame, src);
+    if (!clean) return null;
+    if (effectiveBase === recenter) return this.synthPose(clean);
+    const delta = frame.getPose(recenter, effectiveBase)?.transform;
+    return delta ? this.synthPose(composeRigid(delta, clean)) : null;
+  }
+
+  private synthPose(transform: XRRigidTransform, emulatedPosition = true): XRPose {
+    return { transform, emulatedPosition };
+  }
+
+  /** The controller's pose (body-relative offset + its own orientation) expressed in our recenter
+   *  frame (internalRecentered) — the frame its orientation datum lives in, so it's self-consistent
+   *  and callers can compose it wherever needed. Undefined if there's no recenter frame or its viewer
+   *  pose is unavailable this frame. */
+  private controllerPoseInRecenter(frame: XRFrame, src: ZapboxInputSource): XRRigidTransform | undefined {
+    if (!this.internalRecentered) return undefined;
+    const viewerRec = frame.getViewerPose(this.internalRecentered);
+    if (!viewerRec) return undefined;
     const offset = CONTROLLER_OFFSETS[src.handedness === 'left' ? 'left' : 'right'];
-    const transform = controllerTransform(viewerPose.transform, src.controller.orientation, offset);
-    return { transform, emulatedPosition: true } as unknown as XRPose;
+    return controllerTransform(viewerRec.transform, src.controller.orientation, offset);
+  }
+
+  /**
+   * getPose where the base isn't a reference space (e.g. one controller relative to another). If
+   * neither endpoint is ours there's nothing to synthesise — defer to the platform. Otherwise express
+   * both in our recenter frame and return `base⁻¹ ∘ space`; the shared frame cancels, so the result is
+   * the true relative pose regardless of the recenter (or the page's world transform). The target is
+   * never a reference space here — getPose swaps that case into the base-is-reference path.
+   */
+  private relativeToNonRefBase(frame: XRFrame, space: XRSpace, base: XRSpace): XRPose | null {
+    const src = this.synthSourceFor(space);
+    const srcBase = this.synthSourceFor(base);
+    if (!src && !srcBase) return frame.getPose(space, base) ?? null;
+    if (!this.internalRecentered) return null;
+
+    const spaceInRec = src ? this.controllerPoseInRecenter(frame, src) : frame.getPose(space, this.internalRecentered)?.transform;
+    const baseInRec = srcBase ? this.controllerPoseInRecenter(frame, srcBase) : frame.getPose(base, this.internalRecentered)?.transform;
+    if (!spaceInRec || !baseInRec) return null;
+    return this.synthPose(composeRigid(baseInRec.inverse, spaceInRec));
   }
 
   // --- recenter ------------------------------------------------------------
 
   private applyPendingReset(frame: XRFrame): void {
-    if (!this.primaryBase) return;
+    if (!this.internalRaw || !this.internalRecentered) return;
+    if (this.pendingControllerResets.size === 0 && !this.pendingFullReset) return;
 
     if (this.pendingControllerResets.size > 0) {
-      // Align ONLY the controllers whose menu was held to where the user is currently looking.
-      const vp = frame.getViewerPose(this.effectiveFor(this.primaryBase) as XRReferenceSpace);
+      // Align ONLY the controllers whose menu was held to the current gaze, read in the recenter frame
+      // (where controller orientations live) so resetForward's datum matches how they're re-expressed.
+      const vp = frame.getViewerPose(this.internalRecentered);
       if (vp) {
         const g = headingFromOrientation(vp.transform.orientation);
         for (const controller of this.pendingControllerResets) controller.resetForward(g.x, g.z);
@@ -297,14 +461,25 @@ export class ZapboxSessionAdapter {
     }
 
     if (this.pendingFullReset) {
-      // Full recenter: make the current (native) gaze become forward, then point all controllers there.
-      this.pendingFullReset = false;
-      const vp = frame.getViewerPose(this.primaryBase);
-      if (vp) {
-        const g = headingFromOrientation(vp.transform.orientation);
-        this.offsetTransform = recenterOffsetFromGaze(g.x, g.z);
-        this.rebuildEffectives();
+      // Full recenter: make the current physical gaze the new forward. Recenter the reference FIRST
+      // (recomputed from gaze in the RAW/physical frame; effectiveFor picks it up so content rotates
+      // too), THEN re-point the controllers, whose −Z datum is relative to that recentered frame.
+      // Dispatch 'reset' last, once the offset and controller datums are both settled. The recenter is
+      // a yaw about the base origin, but it only translates the viewer by rotating the PHYSICAL head
+      // offset from that origin — the page's virtual position sits outside it (viewer =
+      // playerOffset ∘ recenter⁻¹ ∘ head), so a seated user (head ~above the origin) just reorients;
+      // only physically walking away from the start point would swing their position.
+      const vpRaw = frame.getViewerPose(this.internalRaw);
+      if (vpRaw) {
+        this.pendingFullReset = false;
+        const previousOffset = this.offsetTransform;
+        const g = headingFromOrientation(vpRaw.transform.orientation);
+        const newOffset = recenterOffsetFromGaze(g.x, g.z);
+        this.setRecenter(newOffset);
         for (const s of this.inputSources) s.controller.resetForward(0, -1);
+        // Origin shift from the old recenter to the new (R_old⁻¹ ∘ R_new, pure yaw) for the reset event.
+        const delta = previousOffset ? composeRigid(previousOffset.inverse, newOffset) : undefined;
+        this.dispatchReset(delta);
       }
     }
   }

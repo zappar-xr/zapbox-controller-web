@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Zapbox WebXR locomotion demo</title>
+    <style>
+      html, body { height: 100%; }
+      body { margin: 0; overflow: hidden; font-family: system-ui, sans-serif; background: #101015; color: #ddd; }
+      canvas { display: block; width: 100%; height: 100%; }
+      #help {
+        position: fixed; top: 12px; left: 12px; max-width: 22rem; padding: 10px 14px;
+        background: rgba(12,12,18,0.8); border: 1px solid #888; border-radius: 10px;
+        font-size: 13px; line-height: 1.5;
+      }
+      #help b { color: #fff; }
+      #help hr { border: none; border-top: 1px solid #888; margin: 8px 0; }
+      #help label { display: block; line-height: 1.6; }
+    </style>
+  </head>
+  <body>
+    <!--
+      A continuous-locomotion immersive-vr page that drives its OWN reference spaces the way the
+      immersive-web teleportation sample does: request a base reference space, then per frame derive an
+      offset reference space (getOffsetReferenceSpace) for the player's pose and feed THAT to every
+      getViewerPose / getPose. This is the pattern that exercises the Zapbox shim's offset-space path.
+      Locomotion is not teleport: right thumbstick glides, left thumbstick snap-turns.
+    -->
+    <div id="help">
+      <b>Zapbox locomotion</b><br />
+      Right thumbstick — glide across the ground in the pushed direction, oriented to the right
+      controller (up = where it points, so held level it's a top-down joystick; no motion when it
+      points near-vertical).<br />
+      Left thumbstick left/right — snap-turn 20°.
+      <hr />
+      <b>On controller recenter (menu extra-long-press):</b>
+      <label><input type="radio" name="resetMode" value="origin" checked /> Return to origin</label>
+      <label><input type="radio" name="resetMode" value="ignore" /> Ignore — absorb, view stays put</label>
+      <label><input type="radio" name="resetMode" value="heading" /> Reset heading only</label>
+    </div>
+    <script type="module" src="./webxr-locomotion.ts"></script>
+  </body>
+</html>

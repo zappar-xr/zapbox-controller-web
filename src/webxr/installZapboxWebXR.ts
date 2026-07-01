@@ -47,10 +47,13 @@ export async function installZapboxWebXR(options: InstallZapboxWebXROptions = {}
     connectionInterval: options.connectionInterval,
   });
   let hasSetup = false;
+  // A single immersive-vr request can span guided pairing + calibration pre-roll — seconds of UI
+  // during which the user (or the page) may tap "Enter VR" again. WebXR only supports one immersive
+  // session at a time, so we dedupe concurrent immersive-vr requests onto the first's promise rather
+  // than stacking a second setup overlay on top of the running one.
+  let pendingSession: Promise<XRSession> | null = null;
 
-  const requestSession = async (mode: XRSessionMode, init?: XRSessionInit): Promise<XRSession> => {
-    if (mode !== 'immersive-vr') return realRequestSession(mode, init);
-
+  const startSession = async (mode: XRSessionMode, init?: XRSessionInit): Promise<XRSession> => {
     if (!hasSetup) {
       // First session: run guided pairing. BLE pairing consumes the page's user gesture, but the
       // setup flow always ends on a fresh tap — the "Enter VR" finish button, the "Continue with N"
@@ -84,6 +87,19 @@ export async function installZapboxWebXR(options: InstallZapboxWebXROptions = {}
       void manager.disconnect();
     });
     return adapter.session;
+  };
+
+  const requestSession = (mode: XRSessionMode, init?: XRSessionInit): Promise<XRSession> => {
+    if (mode !== 'immersive-vr') return realRequestSession(mode, init);
+    // Coalesce re-entrant taps: while a request is in flight, hand back the same promise so pairing
+    // runs once. Cleared when it settles, so a genuinely new session (after the last one ended) sets
+    // up again as normal.
+    if (!pendingSession) {
+      pendingSession = startSession(mode, init).finally(() => {
+        pendingSession = null;
+      });
+    }
+    return pendingSession;
   };
 
   const xrProxy = new Proxy(realXR, {

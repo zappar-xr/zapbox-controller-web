@@ -29,6 +29,27 @@ export function headingFromOrientation(o: DOMPointReadOnly): { x: number; z: num
   return { x: TMP_FWD[0], z: TMP_FWD[2] };
 }
 
+const REBASE_Q = quat.create();
+const REBASE_P = vec3.create();
+const REBASE_TMP = quat.create();
+
+/** Pre-compose the rigid transform `(tq, tp)` onto the running `(q, p)`: (tq,tp) ∘ (q,p) in place,
+ *  i.e. p ← tq·p + tp and q ← tq·q. */
+function preComposeRigid(q: quat, p: vec3, tq: DOMPointReadOnly, tp: DOMPointReadOnly): void {
+  quat.set(REBASE_TMP, tq.x, tq.y, tq.z, tq.w);
+  vec3.transformQuat(p, p, REBASE_TMP);
+  p[0] += tp.x; p[1] += tp.y; p[2] += tp.z;
+  quat.multiply(q, REBASE_TMP, q);
+}
+
+/** Compose two rigid transforms: `a ∘ b` (applies b, then a). Returns a fresh XRRigidTransform. */
+export function composeRigid(a: XRRigidTransform, b: XRRigidTransform): XRRigidTransform {
+  quat.set(REBASE_Q, b.orientation.x, b.orientation.y, b.orientation.z, b.orientation.w);
+  vec3.set(REBASE_P, b.position.x, b.position.y, b.position.z);
+  preComposeRigid(REBASE_Q, REBASE_P, a.orientation, a.position);
+  return new XRRigidTransform({ x: REBASE_P[0], y: REBASE_P[1], z: REBASE_P[2] }, quatToOrientation(REBASE_Q));
+}
+
 /** gl-matrix quat → DOMPointInit for XRRigidTransform. */
 export function quatToOrientation(q: quat): DOMPointInit {
   return { x: q[0], y: q[1], z: q[2], w: q[3] };
